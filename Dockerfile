@@ -82,7 +82,7 @@ RUN cd /root && \
     make install && \
     ldconfig
 
-RUN cd /root
+WORKDIR /root
 
 # Enable wayland id-agent
 COPY ./settings/weston.ini /etc/xdg/weston/weston.ini
@@ -100,6 +100,48 @@ RUN chown -R ${DOCKER_USER}:${DOCKER_USER} /home/${DOCKER_USER}
 #COPY ./script/.bashrc.patch   /tmp
 #RUN cat /tmp/.bashrc.patch >> /home/${DOCKER_USER}/.bashrc
 #RUN rm -rf /tmp/.bashrc.patch
+
+# For CEF/Chromium
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /root
+RUN apt-get install -y curl lsb-release tzdata libgtkglext1-dev wget python3 python3-pip ninja-build xcb-proto python-xcbgen python-setuptools
+RUN curl 'https://chromium.googlesource.com/chromium/src/+/master/build/install-build-deps.sh?format=TEXT' \
+ | base64 -d > install-build-deps.sh
+RUN chmod +x install-build-deps.sh 
+RUN ./install-build-deps.sh --no-arm --no-chromeos-fonts --no-nacl --no-prompt
+
+ARG WORK=/root/cef_build/
+WORKDIR ${WORK}
+RUN git clone https://bitbucket.org/msisov/cef
+WORKDIR cef
+RUN git checkout origin/wayland_support
+
+RUN cd ${WORK} && \
+    cp cef/tools/automate/automate-git.py ./ && \
+    python ./automate-git.py --download-dir=. --no-distrib --no-build --url=https://bitbucket.org/msisov/cef  --checkout=bbc875c6c8b5aecc176141a7a88002631ee1bad2
+
+ENV PATH {$PATH}:${WORK}/depot_tools
+WORKDIR ${WORK}/chromium/src/cef
+ENV GN_DEFINES "is_official_build=true use_allocator=none symbol_level=1 use_cups=false \
+use_gnome_keyring=false enable_remoting=false enable_nacl=false use_kerberos=false use_gtk=false \
+treat_warnings_as_errors=false ozone_platform_wayland=true ozone_platform_x11=true ozone_platform=wayland \
+use_ozone=true use_glib=true use_aura=true ozone_auto_platforms=false dcheck_always_on=false use_xkbcommon=true \
+use_system_minigbm=true use_system_libdrm=true"
+RUN ./cef_create_projects.sh
+WORKDIR ${WORK}/chromium/src
+RUN ninja -j16 -C out/Release_GN_x64/ cefsimple
+RUN mkdir -p /home/${DOCKER_USER}/.local/cef/
+RUN cp out/Release_GN_x64/*.dat /home/${DOCKER_USER}/.local/cef
+RUN cp out/Release_GN_x64/*.pak /home/${DOCKER_USER}/.local/cef
+RUN cp out/Release_GN_x64/*.bin /home/${DOCKER_USER}/.local/cef
+RUN cp out/Release_GN_x64/*.so /home/${DOCKER_USER}/.local/cef
+RUN cp -r out/Release_GN_x64/locales /home/${DOCKER_USER}/.local/cef
+RUN cp out/Release_GN_x64/cefsimple /home/${DOCKER_USER}/.local/cef
+RUN chown -R ${DOCKER_USER}:${DOCKER_USER} /home/${DOCKER_USER}
+ENV PATH $PATH:/home/${DOCKER_USER}/.local/cef
+RUN echo "/home/${DOCKER_USER}/.local/cef" > /etc/ld.so.conf.d/cef.conf
+RUN ldconfig
+RUN usermod -aG video user
 
 USER ${DOCKER_USER}
 WORKDIR /home/${DOCKER_USER}
